@@ -3,6 +3,9 @@ name = "rustfast"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["rustfast-macros"]
+
 [[bin]]
 name = "rustfast"
 path = "src/main.rs"
@@ -12,6 +15,7 @@ name = "rustfast"
 path = "src/lib.rs"
 
 [dependencies]
+rustfast-macros = { path = "rustfast-macros" }
 # 异步运行时
 tokio = { version = "1", features = ["full"] }
 
@@ -35,16 +39,21 @@ hmac = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 
-# 数据库驱动（底层驱动，非 ORM）
-tokio-postgres = { version = "0.7", optional = true }
-mysql_async = { version = "0.34", optional = true }
-rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+# 数据库底座（驱动 + 连接池，非 ORM）
+# QueryBuilder / Model 仍为框架自研；sqlx 仅作为统一驱动层
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "any"] }
+
+# TLS（HTTPS 支持，feature = "tls" 启用）
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"], optional = true }
+rustls-pemfile = { version = "2", optional = true }
 
 [features]
 default = ["sqlite"]
-postgres = ["dep:tokio-postgres"]
-mysql = ["dep:mysql_async"]
-sqlite = ["dep:rusqlite"]
+postgres = ["sqlx/postgres"]
+mysql = ["sqlx/mysql"]
+sqlite = ["sqlx/sqlite"]
+tls = ["dep:tokio-rustls", "dep:rustls-pemfile"]
 
 [dev-dependencies]
 tokio-test = "0.4"
+rcgen = "0.13"

@@ -1,14 +1,16 @@
 use std::collections::HashMap;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::framework::http::request::{Method, Request};
 use crate::framework::error::{FastError, Result};
 
 const MAX_HEADER_SIZE: usize = 8192;   // 8 KB
 const MAX_BODY_SIZE: usize = 32 * 1024 * 1024; // 32 MB
 
-/// 从 TcpStream 解析完整 HTTP/1.1 请求
-pub async fn parse_request(stream: &mut TcpStream, remote_addr: String) -> Result<Request> {
+/// 从异步流（TCP 或 TLS）解析完整 HTTP/1.1 请求
+pub async fn parse_request<S>(stream: &mut S, remote_addr: String) -> Result<Request>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut buf = Vec::with_capacity(4096);
     let mut tmp = [0u8; 4096];
 

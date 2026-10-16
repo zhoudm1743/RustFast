@@ -915,3 +915,59 @@ async fn test_complex_combined_query() {
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].get::<String>("name").unwrap(), "Bob"); // total=30
 }
+
+// ── #[derive(Model)] 派生宏测试 ─────────────────────────────────────────────
+
+#[derive(Debug, PartialEq, serde::Serialize, crate::framework::database::model::Model)]
+struct DerivedUser {
+    id: i64,
+    name: String,
+    #[model(skip_insert)]
+    created_at: String,
+    #[model(skip)]
+    cached_token: String,
+}
+
+#[tokio::test]
+async fn test_derive_model_macro() {
+    // 默认表名 / 主键
+    assert_eq!(<DerivedUser as Model>::table_name(), "derived_users");
+    assert_eq!(<DerivedUser as Model>::primary_key(), "id");
+
+    // to_values 应排除 skip_insert 与 skip 字段
+    let u = DerivedUser {
+        id: 1,
+        name: "Alice".to_string(),
+        created_at: "2024-01-01".to_string(),
+        cached_token: "secret".to_string(),
+    };
+    let values = <DerivedUser as Model>::to_values(&u);
+    let cols: Vec<&str> = values.iter().map(|(c, _)| *c).collect();
+    assert_eq!(cols, vec!["id", "name"]);
+
+    // 端到端：建表 → 插入 → 查询回模型
+    let db = DbManager::sqlite(":memory:").unwrap();
+    db.raw_execute(
+        "CREATE TABLE derived_users (
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT 'db-generated'
+        )",
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    db.table("derived_users").insert(values).await.unwrap();
+
+    let loaded = db
+        .table("derived_users")
+        .first::<DerivedUser>()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.id, 1);
+    assert_eq!(loaded.name, "Alice");
+    assert_eq!(loaded.created_at, "db-generated");
+    assert_eq!(loaded.cached_token, ""); // skip 字段取默认值
+}

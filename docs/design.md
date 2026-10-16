@@ -1,7 +1,8 @@
 # RustFast 框架设计文档
 
 > RustFast — 参照 GoFast 架构思想，基于纯 Rust 实现的轻量、高性能后端框架。
-> **核心原则：HTTP 服务器与 ORM 均为自研，不依赖 Axum/Actix/Diesel/SQLx 等高层框架。**
+> **核心原则：HTTP 服务器自研，不依赖 Axum/Actix 等高层框架；ORM 层（QueryBuilder / Model / Facade）自研，
+> 数据库底座使用 sqlx（仅作为驱动 + 连接池，不使用其 ORM 能力）。**
 
 ---
 
@@ -17,16 +18,22 @@
 | `uuid` | UUID 生成 | 主键生成 |
 | `chrono` | 日期时间 | 时间处理 |
 | `tracing` / `tracing-subscriber` | 结构化日志 | 低层日志基础 |
-| `tokio-postgres` | PostgreSQL 驱动 | 数据库通信协议 |
-| `mysql_async` | MySQL 驱动 | 数据库通信协议 |
-| `rusqlite` | SQLite 驱动 | 嵌入式数据库 |
+| `sqlx` | 数据库驱动 + 连接池 | 仅作驱动层（Any 驱动统一 SQLite/PG/MySQL），QueryBuilder/Model 仍自研 |
+| `tokio-rustls` / `rustls-pemfile` | TLS | 可选（feature = "tls"），HTTPS 支持 |
+| `syn` / `quote` | proc-macro | 仅 `rustfast-macros` crate（derive(Model)）使用 |
 | `bcrypt` / `sha2` | 密码/签名 | JWT/安全 |
 | `base64` | Base64 编码 | JWT 实现 |
 
 ### 禁止使用的高层框架
 - ❌ Axum、Actix-web、Warp、Rocket（HTTP 框架）
-- ❌ Diesel、SQLx、Sea-ORM（ORM 框架）
+- ❌ Diesel、Sea-ORM（完整 ORM 框架）
 - ❌ Tower（中间件框架）
+
+> **关于 sqlx 的决策说明**：sqlx 不是 ORM（无 Model/关系映射/自动迁移），它提供的是
+> 异步驱动、连接池、Row 抽象。曾计划基于 tokio-postgres / mysql_async / rusqlite 裸驱动自研，
+> 但存在三个实际问题：rusqlite 是同步库会阻塞 tokio worker；三家驱动占位符（`$n` vs `?`）
+> 与 Row/Value 类型映射各不相同；连接池健康检查/超时/回收需大量重复代码。
+> 因此改为以 sqlx 作统一驱动底座，框架自研的 QueryBuilder / Model / Facade 完全保留。
 
 ---
 
@@ -35,21 +42,25 @@
 ```
 RustFast/
 ├── Cargo.toml                    # Workspace 根配置
+├── rustfast-macros/              # proc-macro crate（derive(Model)）
+│   ├── Cargo.toml
+│   └── src/lib.rs
 ├── src/
-│   ├── main.rs                   # 入口点
+│   ├── main.rs                   # 入口点（含 migrate 等控制台命令分发）
 │   ├── lib.rs                    # 库根
 │   ├── app/                      # 业务代码（用户编写）
 │   │   ├── http/
 │   │   │   ├── controllers/      # 控制器
 │   │   │   ├── middleware/       # 中间件
 │   │   │   └── requests/         # 请求结构体
-│   │   ├── models/               # 数据模型
+│   │   ├── models/               # 数据模型（支持 #[derive(Model)]）
+│   │   ├── migrations/           # 数据库迁移
 │   │   ├── providers/            # 自定义 ServiceProvider
 │   │   └── console/
 │   │       └── commands/         # 自定义命令
 │   ├── bootstrap/
 │   │   ├── app.rs                # 应用引导 & Provider 列表
-│   │   └── commands.rs           # 命令注册
+│   │   └── commands.rs           # 控制台命令（migrate / rollback / status）
 │   ├── config/
 │   │   └── config.yaml           # 配置文件
 │   ├── routes/
@@ -95,19 +106,17 @@ RustFast/
 │       │   ├── context.rs        # 请求上下文
 │       │   ├── middleware.rs     # 中间件链
 │       │   └── service_provider.rs
-│       ├── database/             # 自研 ORM
+│       ├── database/             # 自研 ORM（QueryBuilder/Model，sqlx 作驱动底座）
 │       │   ├── mod.rs
-│       │   ├── connection.rs     # 连接抽象
-│       │   ├── pool.rs           # 连接池
+│       │   ├── connection.rs     # DbConnection 抽象
+│       │   ├── pool.rs           # 连接池配置（映射 sqlx PoolOptions）
 │       │   ├── query_builder.rs  # SQL 查询构造器
 │       │   ├── model.rs          # Model trait
 │       │   ├── migration.rs      # 迁移系统
 │       │   ├── service_provider.rs
 │       │   └── drivers/
 │       │       ├── mod.rs
-│       │       ├── postgres.rs
-│       │       ├── mysql.rs
-│       │       └── sqlite.rs
+│       │       └── sqlx_conn.rs  # sqlx Any 统一驱动（SQLite/PG/MySQL）
 │       ├── cache/                # 缓存服务
 │       │   ├── mod.rs
 │       │   ├── memory_store.rs
@@ -196,6 +205,14 @@ TCP连接
 - 请求头解析（大小写不敏感）
 - Body 读取（Content-Length 和 chunked）
 - Multipart 文件上传解析
+- 解析器基于 `AsyncRead + AsyncWrite` 泛型流，TCP 与 TLS 复用同一份代码
+
+### 4.6 TLS（HTTPS，可选）
+
+- feature `tls` 启用，基于 `tokio-rustls`（ring 后端）
+- `HttpServer::enable_tls(cert_path, key_path)` 加载 PEM 证书/私钥
+- 配置驱动：`server.tls.cert` / `server.tls.key`
+- 响应写完后主动 `shutdown()` 发送 TLS `close_notify`，避免对端 UnexpectedEof
 
 ### 4.3 路由树（Trie）
 
@@ -258,9 +275,9 @@ impl Context {
 ```
 QueryBuilder（SQL 构造器）
   ├── select / where / join / order / limit / offset
-  ├── 生成参数化 SQL
-  └── execute → Connection → Driver（postgres/mysql/sqlite）
-                                └── 结果集 Row 映射 → Model
+  ├── 生成参数化 SQL（统一 `?` 占位符，执行前按库改写，Postgres → `$n`）
+  └── execute → DbConnection → sqlx Any 驱动（postgres/mysql/sqlite 统一）
+                                └── 结果集 AnyRow 解码 → Row → Model
 ```
 
 ### 5.2 Model Trait
@@ -328,21 +345,30 @@ let rows = Db::raw("SELECT * FROM users WHERE id = $1", &[&user_id])
     .await?;
 ```
 
-### 5.4 连接池
+### 5.4 连接池与事务
 
-- 自研简单连接池（基于 `tokio::sync::Semaphore` + `Mutex<VecDeque<Connection>>`）
-- 支持最小/最大连接数、超时、健康检查
-- 支持 PostgreSQL、MySQL、SQLite 三种驱动
+- 连接池由 sqlx `Pool` 提供（最小/最大连接数、获取超时、健康检查、连接回收）
+- `PoolConfig` 映射为 sqlx `PoolOptions`
+- 三种数据库共用 sqlx `Any` 驱动，由连接 URL 区分（`sqlite:` / `postgres:` / `mysql:`）
+- SQLite `:memory:` 强制单连接池（多个连接会得到各自独立的内存库）
+- 事务：`pool.begin()` 获得 `Transaction<'static, Any>` 并持有，事务期间所有语句路由到事务连接；`INSERT` 取 `last_insert_id` 保证在同一连接上执行
+- 已知限制：sqlx Any 驱动不支持 chrono 类型解码，时间列按文本处理（Postgres 原生时间类型建议 SQL 中 CAST 为 TEXT）
 
 ### 5.5 迁移系统
 
 ```rust
 pub trait Migration: Send + Sync {
-    fn version(&self) -> &'static str;   // "20240101_000001"
-    fn up(&self) -> &'static str;        // SQL DDL
+    fn version(&self) -> &'static str;   // "20240101_000001"（执行顺序依据）
+    fn name(&self) -> &'static str;      // 迁移名称
+    fn up(&self) -> &'static str;        // SQL DDL（多语句以 ; 分隔）
     fn down(&self) -> &'static str;      // 回滚 SQL
 }
 ```
+
+- `Migrator` 按 version 升序执行未应用的迁移，记录于 `_fast_migrations` 表
+- 每个迁移在独立事务中执行，失败自动回滚
+- 控制台命令：`cargo run -- migrate` / `migrate:rollback [步数]` / `migrate:status`
+- 应用迁移代码位于 `src/app/migrations/`，在 `all()` 中注册
 
 ---
 
@@ -386,41 +412,42 @@ pub trait Migration: Send + Sync {
 
 ### Phase 1：核心骨架
 1. ✅ Cargo.toml 项目初始化
-2. IoC 容器（Container + Application）
-3. ServiceProvider trait
-4. 配置服务（Config）
-5. 日志服务（Log）
+2. ✅ IoC 容器（Container + Application）
+3. ✅ ServiceProvider trait
+4. ✅ 配置服务（Config）
+5. ✅ 日志服务（Log）
 
 ### Phase 2：自研 HTTP 框架
-1. TCP 服务器（TcpListener）
-2. HTTP/1.1 协议解析器
-3. Request / Response 类型
-4. Trie 路由树
-5. 中间件链
-6. Context / Response Builder
-7. HTTP ServiceProvider
+1. ✅ TCP 服务器（TcpListener）
+2. ✅ HTTP/1.1 协议解析器
+3. ✅ Request / Response 类型
+4. ✅ Trie 路由树
+5. ✅ 中间件链
+6. ✅ Context / Response Builder
+7. ✅ HTTP ServiceProvider
+8. ✅ TLS 支持（tokio-rustls，feature = "tls"）
 
 ### Phase 3：自研 ORM
-1. 连接抽象与连接池
-2. QueryBuilder（SELECT/INSERT/UPDATE/DELETE）
-3. Model trait
-4. PostgreSQL 驱动适配
-5. MySQL 驱动适配
-6. SQLite 驱动适配
-7. 迁移系统
-8. Database ServiceProvider
+1. ✅ 连接抽象（DbConnection trait）
+2. ✅ QueryBuilder（SELECT/INSERT/UPDATE/DELETE）
+3. ✅ Model trait
+4. ✅ sqlx Any 统一驱动（SQLite/PostgreSQL/MySQL，占位符改写、行解码）
+5. ✅ 连接池（sqlx Pool）与事务支持
+6. ✅ 迁移系统（Migrator + 控制台命令）
+7. ✅ Database ServiceProvider
+8. ✅ #[derive(Model)] 派生宏（rustfast-macros crate）
 
 ### Phase 4：辅助服务
-1. 缓存服务（Memory Store）
-2. 验证服务
-3. JWT 服务（自研 HS256）
-4. Facades 门面层
+1. ✅ 缓存服务（Memory Store）
+2. ✅ 验证服务
+3. ✅ JWT 服务（自研 HS256）
+4. ✅ Facades 门面层
 
 ### Phase 5：应用层示例
-1. 示例控制器
-2. 示例模型
-3. 示例路由注册
-4. 完整的 main.rs
+1. ✅ 示例控制器
+2. ✅ 示例模型
+3. ✅ 示例路由注册
+4. ✅ 完整的 main.rs（含控制台命令分发）
 
 ---
 
@@ -432,7 +459,7 @@ pub trait Migration: Send + Sync {
 | HTTP 并发 | 每连接一个 tokio task | 简单高效，支持大量并发 |
 | 类型擦除 | `Arc<dyn Any + Send + Sync>` | IoC 容器需要运行时类型擦除 |
 | 路由算法 | Trie（前缀树）| O(path_length) 匹配，支持参数路由 |
-| 连接池 | Semaphore + VecDeque | 无需第三方，纯 tokio 实现 |
+| 连接池 | sqlx `Pool` | 健康检查/超时/回收成熟可靠，避免自研池的边界问题 |
 | ORM 返回值 | `Result<T>` | Rust 错误处理惯用法 |
 | 配置格式 | YAML | 与 GoFast 保持一致 |
 | 主键类型 | UUID v4 | 分布式友好 |

@@ -4,12 +4,21 @@ app:
   port: 8080
   debug: true
 
+# HTTPS（需以 --features tls 构建；取消注释并填入证书路径后启用）
+# server:
+#   tls:
+#     cert: storage/certs/server.crt
+#     key: storage/certs/server.key
+
 log:
   level: info
 
 database:
   driver: sqlite
   path: database.db
+  # postgres / mysql 使用完整连接 URL：
+  # driver: postgres
+  # url: postgres://user:pass@127.0.0.1:5432/dbname
 
 cache:
   driver: memory

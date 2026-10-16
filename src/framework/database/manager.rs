@@ -1,23 +1,57 @@
 use std::sync::Arc;
 use crate::framework::database::connection::DbConnection;
+use crate::framework::database::drivers::SqlxConnection;
+use crate::framework::database::pool::PoolConfig;
 use crate::framework::database::query_builder::QueryBuilder;
 use crate::framework::error::Result;
 
-#[cfg(feature = "sqlite")]
-use crate::framework::database::drivers::sqlite::{SqliteConnection, SqliteConfig};
-
 /// 数据库管理器
+#[derive(Clone)]
 pub struct DbManager {
     connection: Arc<dyn DbConnection>,
+    kind: crate::framework::database::drivers::DbKind,
 }
 
 impl DbManager {
     /// 创建 SQLite 连接
-    #[cfg(feature = "sqlite")]
+    ///
+    /// `path` 为数据库文件路径，`:memory:` 为内存数据库
+    /// （内存库强制单连接池，否则多个连接会各自得到独立的内存库）
     pub fn sqlite(path: &str) -> Result<Self> {
-        let config = SqliteConfig { path: path.to_string() };
-        let conn = SqliteConnection::open(&config)?;
-        Ok(Self { connection: Arc::new(conn) })
+        let (url, pool_config) = if path == ":memory:" {
+            (
+                "sqlite::memory:".to_string(),
+                PoolConfig {
+                    min_connections: 1,
+                    max_connections: 1,
+                    ..Default::default()
+                },
+            )
+        } else {
+            // mode=rwc：文件不存在时自动创建（Any URL 仅支持 mode/cache/immutable/vfs 参数）
+            (format!("sqlite://{}?mode=rwc", path), PoolConfig::default())
+        };
+        Self::connect_with_config(&url, &pool_config)
+    }
+
+    /// 通过连接 URL 创建连接（sqlite:/postgres:/mysql: 协议）
+    pub fn connect(url: &str) -> Result<Self> {
+        Self::connect_with_config(url, &PoolConfig::default())
+    }
+
+    /// 通过连接 URL + 自定义连接池配置创建连接
+    pub fn connect_with_config(url: &str, pool_config: &PoolConfig) -> Result<Self> {
+        let conn = SqlxConnection::connect_lazy(url, pool_config)?;
+        let kind = conn.kind();
+        Ok(Self {
+            connection: Arc::new(conn),
+            kind,
+        })
+    }
+
+    /// 数据库类型
+    pub fn kind(&self) -> crate::framework::database::drivers::DbKind {
+        self.kind
     }
 
     /// 开始一个查询（返回 QueryBuilder）

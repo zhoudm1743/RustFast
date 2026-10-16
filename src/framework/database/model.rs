@@ -2,6 +2,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 use crate::framework::error::{FastError, Result};
 
+// 派生宏与 trait 同名，分属宏命名空间与类型命名空间，可同时导出
+pub use rustfast_macros::Model;
+
 /// 数据库行（从查询结果中解析的列值映射）
 #[derive(Debug, Clone)]
 pub struct Row {

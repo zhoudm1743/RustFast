@@ -25,3 +25,7 @@ go-fast-main
 # Added by cargo
 
 /target
+
+# RustFast 运行时产物
+database.db*
+storage/

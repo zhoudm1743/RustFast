@@ -1,11 +1,7 @@
 /// 数据库驱动模块
 ///
-/// 每个驱动实现 `DbConnection` Trait
-#[cfg(feature = "sqlite")]
-pub mod sqlite;
+/// 基于 sqlx `Any` 驱动的统一实现，通过连接 URL 区分
+/// SQLite / PostgreSQL / MySQL，无需每个数据库单独一套驱动代码。
+pub mod sqlx_conn;
 
-#[cfg(feature = "postgres")]
-pub mod postgres;
-
-#[cfg(feature = "mysql")]
-pub mod mysql;
+pub use sqlx_conn::{DbKind, SqlxConnection};

@@ -1,38 +1,15 @@
-use serde_json::Value;
-use crate::framework::database::model::{Model, Row, Param};
-use crate::framework::error::Result;
+use crate::framework::database::model::Model;
 use uuid::Uuid;
 
 /// 示例用户模型
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Model)]
 pub struct User {
     pub id: String,
     pub name: String,
     pub email: String,
+    /// 由应用侧生成，INSERT 时不写入（保留数据库/默认值语义）
+    #[model(skip_insert)]
     pub created_at: String,
-}
-
-impl Model for User {
-    fn table_name() -> &'static str {
-        "users"
-    }
-
-    fn from_row(row: &Row) -> Result<Self> {
-        Ok(User {
-            id: row.get_or::<String>("id"),
-            name: row.get_or::<String>("name"),
-            email: row.get_or::<String>("email"),
-            created_at: row.get_or::<String>("created_at"),
-        })
-    }
-
-    fn to_values(&self) -> Vec<(&'static str, Value)> {
-        vec![
-            ("id", Value::String(self.id.clone())),
-            ("name", Value::String(self.name.clone())),
-            ("email", Value::String(self.email.clone())),
-        ]
-    }
 }
 
 impl User {
